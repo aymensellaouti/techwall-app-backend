@@ -1,0 +1,74 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Founder {
+  id        String   @id @default(uuid())
+  name      String
+  role      String
+  bio       String
+  linkedin  String
+  photoUrl  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Category {
+  id          String     @id @default(uuid())
+  key         String     @unique
+  label       String
+  description String?
+  playlists   Playlist[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+}
+
+model Playlist {
+  id                String   @id @default(uuid())
+  youtubePlaylistId String   @unique
+  title             String
+  description       String?
+  thumbnailUrl      String?
+  videoCount        Int      @default(0)
+  categoryId        String?
+  category          Category? @relation(fields: [categoryId], references: [id])
+  videos            Video[]
+  syncedAt          DateTime?
+  source            String   @default("youtube-sync")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model Video {
+  id              String    @id @default(uuid())
+  youtubeVideoId  String    @unique
+  title           String
+  description     String?
+  thumbnailUrl    String?
+  durationSeconds Int?
+  viewCount       Int       @default(0)
+  publishedAt     DateTime?
+  position        Int       @default(0)
+  playlistId      String
+  playlist        Playlist  @relation(fields: [playlistId], references: [id])
+  syncedAt        DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+model RecommendationRequest {
+  id           String   @id @default(uuid())
+  sessionId    String
+  goalText     String
+  llmProvider  String?
+  llmModel     String?
+  responseJson Json?
+  fallbackUsed Boolean  @default(false)
+  createdAt    DateTime @default(now())
+}
