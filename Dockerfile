@@ -1,44 +1,26 @@
-# Build stage
-FROM node:24-alpine AS builder
-
-WORKDIR /app
-
-# Copy package files
-COPY package*.json ./
-
-# Install all dependencies (including devDependencies for build)
-RUN npm ci
-
-# Copy source code
-COPY . .
-
-# Build the application
-RUN npm run build && \
-    # Verify dist folder was created
-    ls -la dist/ && \
-    # Keep dist folder for runtime
-    echo "Build successful!"
-
-# Runtime stage
 FROM node:24-alpine
 
 WORKDIR /app
 
 ENV NODE_ENV=production
 
-# Copy package files
+# Copy package files first
 COPY package*.json ./
 
-# Install only production dependencies
-RUN npm ci --omit=dev && npm cache clean --force
+# Install all dependencies (including devDeps for build)
+RUN npm ci
 
-# Copy built application from builder stage
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/prisma ./prisma
+# Copy source code
+COPY . .
 
-# Verify all files are present
-RUN ls -la dist/ && echo "Runtime setup successful!"
+# Build the application - this creates dist/
+RUN npm run build
+
+# Verify dist exists and has content
+RUN test -d dist && test -f dist/main.js || (echo "ERROR: dist/main.js not found!" && ls -la && exit 1)
+
+# Remove devDependencies after build
+RUN npm prune --omit=dev
 
 # Expose port
 EXPOSE 3000
