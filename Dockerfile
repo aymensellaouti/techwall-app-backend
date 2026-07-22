@@ -4,14 +4,12 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
-# Force cache invalidation for npm install
-ARG CACHEBUST=1
-
 # Copy package files first
 COPY package*.json ./
 
-# Install ALL dependencies (including devDeps needed for build)
-RUN npm ci
+# Force cache invalidation and install ALL dependencies (including devDeps)
+ARG CACHEBUST=1
+RUN echo "Building with CACHEBUST=${CACHEBUST}" && npm install
 
 # Copy source code
 COPY . .
