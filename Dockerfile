@@ -4,11 +4,14 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
+# Force cache invalidation for npm install
+ARG CACHEBUST=1
+
 # Copy package files first
 COPY package*.json ./
 
 # Install ALL dependencies (including devDeps needed for build)
-RUN npm ci --legacy-peer-deps
+RUN npm ci
 
 # Copy source code
 COPY . .
