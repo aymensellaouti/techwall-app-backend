@@ -29,9 +29,9 @@ ENV NODE_ENV=production
 # Expose port
 EXPOSE 3000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3000/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
+# Health check - give app 2 minutes to start (DB connections can be slow)
+HEALTHCHECK --interval=10s --timeout=5s --start-period=120s --retries=5 \
+  CMD node -e "require('http').get('http://localhost:3000/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})" || exit 1
 
-# Start app
+# Start app with logging
 CMD ["node", "dist/main"]
