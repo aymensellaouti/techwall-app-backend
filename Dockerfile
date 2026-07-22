@@ -1,5 +1,6 @@
 FROM node:24-alpine
 
+# Force rebuild - timestamp: 20260722-090500
 WORKDIR /app
 
 # Copy package files ONLY
