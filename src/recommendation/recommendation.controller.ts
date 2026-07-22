@@ -1,9 +1,11 @@
-import { Body, Controller, Logger, Post } from '@nestjs/common';
+import { Body, Controller, Logger, Post, UseGuards } from '@nestjs/common';
 import { RecommendationService } from './recommendation.service';
 import type { RecommendationRequestDto } from './dto/recommendation-request.dto';
+import { ApiKeyGuard } from '../auth/api-key.guard';
 import { randomUUID } from 'crypto';
 
 @Controller('recommendations')
+@UseGuards(ApiKeyGuard)
 export class RecommendationController {
   private readonly logger = new Logger(RecommendationController.name);
 
