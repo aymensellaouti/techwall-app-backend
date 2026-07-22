@@ -12,6 +12,9 @@ RUN rm -rf node_modules package-lock.json && npm install --force
 # Copy source code
 COPY . .
 
+# Generate Prisma Client (required before build)
+RUN npx prisma generate
+
 # Build the application with verbose output
 RUN npm run build && echo "Build complete, checking output..." && find dist -name "*.js" -type f | head -20
 
