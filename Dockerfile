@@ -13,22 +13,32 @@ RUN npm ci
 COPY . .
 
 # Build the application
-RUN npm run build
+RUN npm run build && \
+    # Verify dist folder was created
+    ls -la dist/ && \
+    # Keep dist folder for runtime
+    echo "Build successful!"
 
 # Runtime stage
 FROM node:24-alpine
 
 WORKDIR /app
 
+ENV NODE_ENV=production
+
 # Copy package files
 COPY package*.json ./
 
 # Install only production dependencies
-RUN npm ci --only=production
+RUN npm ci --omit=dev && npm cache clean --force
 
 # Copy built application from builder stage
 COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/prisma ./prisma
+
+# Verify all files are present
+RUN ls -la dist/ && echo "Runtime setup successful!"
 
 # Expose port
 EXPOSE 3000
@@ -38,4 +48,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
   CMD node -e "require('http').get('http://localhost:3000', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
 
 # Start the application
-CMD ["npm", "run", "start:prod"]
+CMD ["node", "dist/main"]
