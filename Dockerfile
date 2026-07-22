@@ -1,5 +1,8 @@
 FROM node:24-alpine
 
+# Install OpenSSL 1.1 for Prisma (Alpine has OpenSSL 3, Prisma needs 1.1)
+RUN apk add --no-cache openssl openssl-dev
+
 # Force rebuild - timestamp: 20260722-090500
 WORKDIR /app
 
