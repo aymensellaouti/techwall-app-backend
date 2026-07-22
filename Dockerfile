@@ -2,26 +2,26 @@ FROM node:24-alpine
 
 WORKDIR /app
 
-ENV NODE_ENV=production
-
-# Copy package files first
+# Copy package files ONLY
 COPY package*.json ./
 
-# Force cache invalidation and install ALL dependencies (including devDeps)
-ARG CACHEBUST=1
-RUN echo "Building with CACHEBUST=${CACHEBUST}" && npm install
+# Force complete reinstall with no cache
+RUN rm -rf node_modules package-lock.json && npm install --force
 
 # Copy source code
 COPY . .
 
-# Build the application - this creates dist/
+# Build the application
 RUN npm run build
 
-# Verify dist exists and has content
-RUN test -d dist && test -f dist/main.js || (echo "ERROR: dist/main.js not found!" && ls -la dist/ && exit 1)
+# Verify build output
+RUN test -f dist/main.js || (echo "ERROR: dist/main.js missing!" && ls -la dist/ && exit 1)
 
-# Remove devDependencies to reduce image size
+# Remove devDependencies
 RUN npm prune --omit=dev
+
+# Set production env
+ENV NODE_ENV=production
 
 # Expose port
 EXPOSE 3000
@@ -30,5 +30,5 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
   CMD node -e "require('http').get('http://localhost:3000/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
 
-# Start the application
+# Start app
 CMD ["node", "dist/main"]
