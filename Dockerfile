@@ -7,8 +7,8 @@ ENV NODE_ENV=production
 # Copy package files first
 COPY package*.json ./
 
-# Install all dependencies (including devDeps for build)
-RUN npm ci
+# Install ALL dependencies (including devDeps needed for build)
+RUN npm ci --legacy-peer-deps
 
 # Copy source code
 COPY . .
@@ -17,9 +17,9 @@ COPY . .
 RUN npm run build
 
 # Verify dist exists and has content
-RUN test -d dist && test -f dist/main.js || (echo "ERROR: dist/main.js not found!" && ls -la && exit 1)
+RUN test -d dist && test -f dist/main.js || (echo "ERROR: dist/main.js not found!" && ls -la dist/ && exit 1)
 
-# Remove devDependencies after build
+# Remove devDependencies to reduce image size
 RUN npm prune --omit=dev
 
 # Expose port
