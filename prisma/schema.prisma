@@ -72,3 +72,12 @@ model RecommendationRequest {
   fallbackUsed Boolean  @default(false)
   createdAt    DateTime @default(now())
 }
+
+model RecommendationFeedback {
+  id        String   @id @default(uuid())
+  sessionId String
+  goalText  String?
+  videoId   String?
+  vote      String // 'up' | 'down'
+  createdAt DateTime @default(now())
+}

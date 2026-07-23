@@ -34,6 +34,7 @@ export class OpenAiProvider implements LlmProvider {
 
       const response = await this.client.chat.completions.create({
         model: 'gpt-4o-mini',
+        temperature: 0.2, // cohérence des recommandations
         messages: [
           { role: 'system', content: params.systemPrompt },
           { role: 'user', content: params.userPrompt },

@@ -46,6 +46,7 @@ describe('RecommendationService', () => {
           useValue: {
             video: { findMany: jest.fn() },
             recommendationRequest: { create: jest.fn() },
+            recommendationFeedback: { create: jest.fn() },
           },
         },
       ],
@@ -369,6 +370,36 @@ describe('RecommendationService', () => {
       const userPrompt = spy.mock.calls[0][0].userPrompt as string;
       expect(userPrompt).toContain('Contexte de la conversation');
       expect(userPrompt).toContain('Apprendre Angular');
+    });
+  });
+
+  describe('Dédoublonnage et feedback', () => {
+    it('déduplique les vidéos recommandées par videoId (garde la 1re occurrence)', async () => {
+      mockLlm({
+        goalSummary: 'x',
+        recommendations: [
+          { videoId: 'vid-ng-guards', title: 'Angular Guards', playlistTitle: 'Angular 13', whyRelevant: 'Justification suffisamment longue pour passer la validation', axes: ['Guards'] },
+          { videoId: 'vid-ng-guards', title: 'Angular Guards (doublon)', playlistTitle: 'Angular 13', whyRelevant: 'Autre justification suffisamment longue pour la validation', axes: ['Guards'] },
+          { videoId: 'vid-ng-rxjs', title: 'Angular RxJS', playlistTitle: 'Angular 13', whyRelevant: 'Justification suffisamment longue pour passer la validation', axes: ['RxJS'] },
+        ],
+        fallbackPlaylist: null,
+      });
+
+      const result = await service.recommend('Objectif avec doublons', 'sess-dedup');
+      const ids = result.plan.recommendations.map(r => r.videoId);
+      expect(ids).toEqual(['vid-ng-guards', 'vid-ng-rxjs']); // doublon retiré
+    });
+
+    it('recordFeedback renvoie ok:true quand la persistance réussit', async () => {
+      jest.spyOn((prisma as any).recommendationFeedback, 'create').mockResolvedValue({});
+      const res = await service.recordFeedback({ sessionId: 's', videoId: 'v1', vote: 'up' });
+      expect(res.ok).toBe(true);
+    });
+
+    it("recordFeedback renvoie ok:false sans planter si la DB est indisponible", async () => {
+      jest.spyOn((prisma as any).recommendationFeedback, 'create').mockRejectedValue(new Error('DB down'));
+      const res = await service.recordFeedback({ sessionId: 's', videoId: 'v1', vote: 'down' });
+      expect(res.ok).toBe(false);
     });
   });
 });

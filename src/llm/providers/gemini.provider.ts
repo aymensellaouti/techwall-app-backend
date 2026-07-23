@@ -35,6 +35,8 @@ export class GeminiProvider implements LlmProvider {
         generationConfig: {
           responseMimeType: 'application/json',
           responseSchema: params.jsonSchema as any,
+          // Température basse: recommandations plus cohérentes/reproductibles
+          temperature: 0.2,
         },
       });
 

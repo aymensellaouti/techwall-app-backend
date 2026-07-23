@@ -365,6 +365,32 @@ Retourne UNIQUEMENT JSON valide:
   }
 
   /**
+   * Enregistre un feedback utilisateur (👍/👎) sur une vidéo recommandée.
+   * Best-effort: ne fait jamais échouer la requête si la table/DB est indisponible.
+   */
+  async recordFeedback(input: {
+    sessionId: string;
+    videoId?: string;
+    goalText?: string;
+    vote: 'up' | 'down';
+  }): Promise<{ ok: boolean }> {
+    try {
+      await (this.prisma as any).recommendationFeedback.create({
+        data: {
+          sessionId: input.sessionId || randomUUID(),
+          videoId: input.videoId ?? null,
+          goalText: input.goalText ?? null,
+          vote: input.vote,
+        },
+      });
+      return { ok: true };
+    } catch (error) {
+      this.logger.warn(`[recordFeedback] Feedback non persisté (DB indisponible): ${error.message}`);
+      return { ok: false };
+    }
+  }
+
+  /**
    * Réponse de repli quand l'IA ne peut rien produire: pas de reco vidéo, mais on
    * propose la playlist du catalogue dont le titre/description/catégorie correspond
    * le mieux aux mots de l'objectif. Si rien ne matche, fallbackPlaylist reste null
@@ -429,6 +455,15 @@ Retourne UNIQUEMENT JSON valide:
     if (!plan.recommendations || plan.recommendations.length === 0) {
       throw new BadRequestException('Recommendation must contain at least one video');
     }
+
+    // Dédoublonnage: le LLM propose parfois plusieurs fois la même vidéo. On garde
+    // la première occurrence de chaque videoId.
+    const seen = new Set<string>();
+    plan.recommendations = plan.recommendations.filter(rec => {
+      if (seen.has(rec.videoId)) return false;
+      seen.add(rec.videoId);
+      return true;
+    });
 
     // Valider chaque vidéo recommandée
     for (let i = 0; i < plan.recommendations.length; i++) {
