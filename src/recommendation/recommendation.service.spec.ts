@@ -347,29 +347,63 @@ describe('RecommendationService', () => {
       expect(spy).toHaveBeenCalledTimes(1);
     });
 
-    it("n'utilise pas le cache et injecte le contexte quand un historique est fourni", async () => {
-      const spy = mockLlm({
+    it('cache actif AVEC historique: même objectif + même contexte servi depuis le cache', async () => {
+      const plan = {
         goalSummary: 'x',
         recommendations: [
-          {
-            videoId: 'vid-ng-rxjs',
-            title: 'Angular : RxJS et Observables',
-            playlistTitle: 'Angular 13',
-            whyRelevant: 'Justification suffisamment longue pour passer la validation du plan',
-            axes: ['RxJS'],
-          },
+          { videoId: 'vid-ng-rxjs', title: 'Angular : RxJS et Observables', playlistTitle: 'Angular 13', whyRelevant: 'Justification suffisamment longue pour passer la validation du plan', axes: ['RxJS'] },
         ],
         fallbackPlaylist: null,
-      });
+      };
+      const spy = mockLlm(plan);
 
       const history = 'Utilisateur: Apprendre Angular\nAssistant: [vidéos proposées: Intro Angular]';
       await service.recommend('et pour approfondir', 'sess-h1', history);
       await service.recommend('et pour approfondir', 'sess-h2', history);
 
-      expect(spy).toHaveBeenCalledTimes(2); // pas de cache avec historique
+      expect(spy).toHaveBeenCalledTimes(1); // 2e appel identique (même contexte) => cache
       const userPrompt = spy.mock.calls[0][0].userPrompt as string;
       expect(userPrompt).toContain('Contexte de la conversation');
       expect(userPrompt).toContain('Apprendre Angular');
+    });
+
+    it('contextes différents => clés différentes => pas de cache', async () => {
+      const plan = {
+        goalSummary: 'x',
+        recommendations: [
+          { videoId: 'vid-ng-rxjs', title: 'Angular : RxJS et Observables', playlistTitle: 'Angular 13', whyRelevant: 'Justification suffisamment longue pour passer la validation du plan', axes: ['RxJS'] },
+        ],
+        fallbackPlaylist: null,
+      };
+      const spy = mockLlm(plan);
+
+      await service.recommend('et pour approfondir', 'sess-a', 'Utilisateur: Apprendre Angular');
+      await service.recommend('et pour approfondir', 'sess-b', 'Utilisateur: Apprendre Spark');
+
+      expect(spy).toHaveBeenCalledTimes(2);
+    });
+
+    it('un résultat "aucune vidéo" (objectif hors catalogue) est caché: 2e appel instantané', async () => {
+      // LLM répond mais avec un plan invalide (aucune reco) -> déterministe -> caché
+      const spy = mockLlm({ goalSummary: 'x', recommendations: [], fallbackPlaylist: null });
+
+      const r1 = await service.recommend('je danse le mia zzz', 'sess-nr1');
+      const r2 = await service.recommend('je danse le mia zzz', 'sess-nr2');
+
+      expect(spy).toHaveBeenCalledTimes(1); // 2e servi depuis le cache
+      expect(r1.providerUsed).toBe('none');
+      expect(r2.plan.recommendations).toHaveLength(0);
+    });
+
+    it("une PANNE LLM n'est PAS cachée (transitoire): 2e appel réessaie", async () => {
+      const spy = jest
+        .spyOn(llmService, 'generateStructured')
+        .mockRejectedValue(new Error('All LLM providers failed'));
+
+      await service.recommend('Apprendre Angular vite', 'sess-p1');
+      await service.recommend('Apprendre Angular vite', 'sess-p2');
+
+      expect(spy).toHaveBeenCalledTimes(2); // pas de cache sur panne
     });
   });
 

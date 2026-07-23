@@ -180,9 +180,21 @@ export class RecommendationService {
       .filter(w => w.length >= 3);
   }
 
-  /** Clé de cache: mots-clés triés, pour que "apprendre Angular" == "angular apprendre". */
-  private cacheKey(goalText: string): string {
-    return this.keywords(goalText).sort().join(' ');
+  /**
+   * Clé de cache: mots-clés de l'objectif triés (pour que "apprendre Angular" ==
+   * "angular apprendre"), + empreinte du contexte conversationnel s'il y en a un.
+   * Ainsi le cache reste ACTIF en conversation (au lieu d'être désactivé), tout en
+   * distinguant deux questions identiques posées dans des contextes différents.
+   */
+  private cacheKey(goalText: string, history?: string): string {
+    const base = this.keywords(goalText).sort().join(' ');
+    return history ? `${base}::${this.hash(history)}` : base;
+  }
+
+  private hash(s: string): string {
+    let h = 0;
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+    return String(h);
   }
 
   private getCached(key: string) {
@@ -215,23 +227,20 @@ export class RecommendationService {
   }> {
     this.logger.debug(`[recommend] Starting for goal: "${goalText.substring(0, 30)}..."`);
 
-    // **Cache (#2):** un objectif déjà traité récemment est resservi sans rappeler le LLM.
-    // On NE met PAS en cache les requêtes avec historique (#3): la réponse dépend du
-    // contexte de conversation, donc elle n'est ni réutilisable ni figeable.
-    const useCache = !history;
-    const cacheKey = this.cacheKey(goalText);
-    if (useCache) {
-      const cached = this.getCached(cacheKey);
-      if (cached) {
-        this.logger.debug('[recommend] Réponse servie depuis le cache');
-        return cached;
-      }
+    // **Cache (#2):** clé = objectif + empreinte du contexte. Le cache reste actif
+    // même en conversation (avant, l'historique le désactivait complètement).
+    const cacheKey = this.cacheKey(goalText, history);
+    const cached = this.getCached(cacheKey);
+    if (cached) {
+      this.logger.debug('[recommend] Réponse servie depuis le cache');
+      return cached;
     }
 
+    let allPlaylists: any[] = [];
     try {
       // **POURQUOI:** Charger les vidéos individuelles, pas juste les playlists
       // Gemini ne peut recommander que ce qu'on lui donne. Sans les vidéos, impossible d'être spécifique
-      const allPlaylists = await this.catalogService.getPlaylists();
+      allPlaylists = await this.catalogService.getPlaylists();
       this.logger.debug(`[recommend] Loaded ${allPlaylists.length} playlists`);
 
       // **POURQUOI:** Pré-filtrage des vidéos candidates selon l'objectif (#1)
@@ -288,51 +297,52 @@ Retourne UNIQUEMENT JSON valide:
         : '';
       const userPrompt = `Objectif actuel: ${goalText}${contextBlock}`;
 
+      // **Appel LLM.** Une PANNE (tous les providers KO, quota, réseau) est transitoire:
+      // on dégrade mais on NE CACHE PAS (sinon on figerait une panne temporaire).
       this.logger.debug(`[recommend] Calling LLM service...`);
-      const { response, providerUsed, fallbackUsed } =
-        await this.llmService.generateStructured<RecommendationPlan>({
+      let llm: { response: RecommendationPlan; providerUsed: string; fallbackUsed: boolean };
+      try {
+        llm = await this.llmService.generateStructured<RecommendationPlan>({
           systemPrompt,
           userPrompt,
           jsonSchema: RECOMMENDATION_SCHEMA,
         });
-
-      this.logger.debug(`[recommend] LLM response received (provider: ${providerUsed})`);
-      this.logger.debug(`[recommend] Recommendations count: ${response.recommendations?.length}`);
-
-      await this.validateRecommendationPlan(response, videoCatalog);
-
-      this.logger.debug(`[recommend] Validation passed, saving to DB...`);
-
-      await this.persist(sessionId, goalText, providerUsed, response, fallbackUsed);
-
-      this.logger.debug(
-        `[recommend] Successfully saved recommendation (provider: ${providerUsed}, fallback: ${fallbackUsed})`,
-      );
-
-      const result = { plan: response, providerUsed, fallbackUsed };
-      // On ne met en cache que les vraies recommandations (pas les replis) et seulement
-      // hors contexte conversationnel, pour ne pas figer un état transitoire/contextuel.
-      if (useCache) this.setCached(cacheKey, result);
-      return result;
-    } catch (error) {
-      // **POURQUOI cette dégradation:**
-      // L'endpoint ne doit JAMAIS renvoyer un 500 à l'utilisateur (panne LLM, réponse
-      // invalide, quota dépassé...). On renvoie une réponse structurée 200 "sans reco",
-      // avec au mieux la playlist du catalogue la plus proche de l'objectif.
-      this.logger.warn(
-        `[recommend] Génération/validation impossible (${error.message}). Dégradation gracieuse.`,
-      );
-
-      let playlists: any[] = [];
-      try {
-        playlists = await this.catalogService.getPlaylists();
-      } catch {
-        playlists = [];
+      } catch (llmError) {
+        this.logger.warn(`[recommend] Panne LLM (${llmError.message}). Repli non caché.`);
+        const plan = this.buildGracefulFallback(goalText, allPlaylists);
+        await this.persist(sessionId, goalText, 'none', plan, true);
+        return { plan, providerUsed: 'none', fallbackUsed: true };
       }
 
-      const plan = this.buildGracefulFallback(goalText, playlists);
-      await this.persist(sessionId, goalText, 'none', plan, true);
+      this.logger.debug(`[recommend] LLM response received (provider: ${llm.providerUsed})`);
 
+      // **Validation/déduplication.** Si le LLM a répondu mais qu'aucune vidéo n'est
+      // exploitable (objectif hors catalogue, ex: "je danse le mia"), c'est un résultat
+      // DÉTERMINISTE: on le CACHE pour que les répétitions soient instantanées.
+      try {
+        await this.validateRecommendationPlan(llm.response, videoCatalog);
+      } catch (validationError) {
+        this.logger.warn(
+          `[recommend] Réponse LLM sans vidéo exploitable (${validationError.message}). Repli caché.`,
+        );
+        const plan = this.buildGracefulFallback(goalText, allPlaylists);
+        const result = { plan, providerUsed: 'none', fallbackUsed: true };
+        this.setCached(cacheKey, result);
+        await this.persist(sessionId, goalText, 'none', plan, true);
+        return result;
+      }
+
+      await this.persist(sessionId, goalText, llm.providerUsed, llm.response, llm.fallbackUsed);
+
+      const result = { plan: llm.response, providerUsed: llm.providerUsed, fallbackUsed: llm.fallbackUsed };
+      this.setCached(cacheKey, result);
+      return result;
+    } catch (error) {
+      // Garde-fou ultime: aucune erreur inattendue (catalogue/DB) ne doit produire un 500.
+      this.logger.warn(
+        `[recommend] Erreur inattendue (${error.message}). Dégradation gracieuse (non cachée).`,
+      );
+      const plan = this.buildGracefulFallback(goalText, allPlaylists);
       return { plan, providerUsed: 'none', fallbackUsed: true };
     }
   }
