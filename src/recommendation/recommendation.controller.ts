@@ -1,11 +1,14 @@
-import { Body, Controller, Logger, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Logger, Post, UseGuards, UseInterceptors } from '@nestjs/common';
 import { RecommendationService } from './recommendation.service';
 import type { RecommendationRequestDto } from './dto/recommendation-request.dto';
 import { ApiKeyGuard } from '../auth/api-key.guard';
+import { RateLimitInterceptor } from '../auth/rate-limit.interceptor';
 import { randomUUID } from 'crypto';
 
+// Rate limiting appliqué ICI seulement (endpoint LLM coûteux), pas globalement.
 @Controller('recommendations')
 @UseGuards(ApiKeyGuard)
+@UseInterceptors(RateLimitInterceptor)
 export class RecommendationController {
   private readonly logger = new Logger(RecommendationController.name);
 
