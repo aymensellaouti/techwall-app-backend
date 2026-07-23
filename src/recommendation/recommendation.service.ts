@@ -179,16 +179,7 @@ Retourne UNIQUEMENT JSON valide:
 
       this.logger.debug(`[recommend] Validation passed, saving to DB...`);
 
-      await this.prisma.recommendationRequest.create({
-        data: {
-          sessionId: sessionId || randomUUID(),
-          goalText,
-          llmProvider: providerUsed,
-          llmModel: this.getLlmModel(providerUsed),
-          responseJson: response as any,
-          fallbackUsed,
-        },
-      });
+      await this.persist(sessionId, goalText, providerUsed, response, fallbackUsed);
 
       this.logger.debug(
         `[recommend] Successfully saved recommendation (provider: ${providerUsed}, fallback: ${fallbackUsed})`,
@@ -196,9 +187,101 @@ Retourne UNIQUEMENT JSON valide:
 
       return { plan: response, providerUsed, fallbackUsed };
     } catch (error) {
-      this.logger.error(`[recommend] Error: ${error.message}`, error.stack);
-      throw error;
+      // **POURQUOI cette dégradation:**
+      // L'endpoint ne doit JAMAIS renvoyer un 500 à l'utilisateur (panne LLM, réponse
+      // invalide, quota dépassé...). On renvoie une réponse structurée 200 "sans reco",
+      // avec au mieux la playlist du catalogue la plus proche de l'objectif.
+      this.logger.warn(
+        `[recommend] Génération/validation impossible (${error.message}). Dégradation gracieuse.`,
+      );
+
+      let playlists: any[] = [];
+      try {
+        playlists = await this.catalogService.getPlaylists();
+      } catch {
+        playlists = [];
+      }
+
+      const plan = this.buildGracefulFallback(goalText, playlists);
+      await this.persist(sessionId, goalText, 'none', plan, true);
+
+      return { plan, providerUsed: 'none', fallbackUsed: true };
     }
+  }
+
+  /**
+   * Sauvegarde best-effort de la requête. Ne fait JAMAIS échouer /recommendations
+   * si la base est indisponible (dev local sans DB, coupure Supabase...).
+   */
+  private async persist(
+    sessionId: string,
+    goalText: string,
+    providerUsed: string,
+    plan: RecommendationPlan,
+    fallbackUsed: boolean,
+  ) {
+    try {
+      await this.prisma.recommendationRequest.create({
+        data: {
+          sessionId: sessionId || randomUUID(),
+          goalText,
+          llmProvider: providerUsed,
+          llmModel: this.getLlmModel(providerUsed),
+          responseJson: plan as any,
+          fallbackUsed,
+        },
+      });
+    } catch (error) {
+      this.logger.warn(`[persist] Sauvegarde ignorée (DB indisponible): ${error.message}`);
+    }
+  }
+
+  /**
+   * Réponse de repli quand l'IA ne peut rien produire: pas de reco vidéo, mais on
+   * propose la playlist du catalogue dont le titre/description/catégorie correspond
+   * le mieux aux mots de l'objectif. Si rien ne matche, fallbackPlaylist reste null
+   * (le frontend affiche alors un message "aucune vidéo pertinente trouvée").
+   */
+  private buildGracefulFallback(goalText: string, playlists: any[]): RecommendationPlan {
+    const best = this.bestMatchingPlaylist(goalText, playlists);
+    return {
+      goalSummary: `Je n'ai pas pu générer de recommandation détaillée pour « ${goalText} » pour le moment.`,
+      recommendations: [],
+      fallbackPlaylist: best
+        ? {
+            playlistId: best.id,
+            title: best.title,
+            reason:
+              "Playlist du catalogue la plus proche de ton objectif, en attendant que l'assistant IA soit de nouveau disponible.",
+          }
+        : null,
+    };
+  }
+
+  /**
+   * Scoring simple par mots-clés: compte combien de mots (>= 3 lettres) de l'objectif
+   * apparaissent dans le titre/description/catégorie de chaque playlist.
+   */
+  private bestMatchingPlaylist(goalText: string, playlists: any[]): any | null {
+    if (!playlists?.length) return null;
+    const words = (goalText || '')
+      .toLowerCase()
+      .split(/[^a-zà-ÿ0-9]+/i)
+      .filter(w => w.length >= 3);
+    if (!words.length) return null;
+
+    let best: any = null;
+    let bestScore = 0;
+    for (const p of playlists) {
+      const hay = `${p.title ?? ''} ${p.description ?? ''} ${p.category?.label ?? ''}`.toLowerCase();
+      let score = 0;
+      for (const w of words) if (hay.includes(w)) score++;
+      if (score > bestScore) {
+        bestScore = score;
+        best = p;
+      }
+    }
+    return bestScore > 0 ? best : null;
   }
 
   /**

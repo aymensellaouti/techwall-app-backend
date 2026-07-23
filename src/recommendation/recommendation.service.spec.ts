@@ -1,5 +1,4 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException } from '@nestjs/common';
 import { RecommendationService } from './recommendation.service';
 import { LlmService } from '../llm/llm.service';
 import { CatalogService } from '../catalog/catalog.service';
@@ -196,43 +195,62 @@ describe('RecommendationService', () => {
     });
   });
 
-  describe('Validation des recommandations', () => {
-    it('rejette une réponse sans aucune recommandation', async () => {
-      mockLlm({ goalSummary: 'x', recommendations: [], fallbackPlaylist: null });
-      await expect(service.recommend('Objectif', 'sess-6')).rejects.toThrow(BadRequestException);
-    });
-
-    it('rejette un videoId absent du catalogue', async () => {
-      mockLlm({
+  describe('Dégradation gracieuse (jamais de 500)', () => {
+    // Chaque réponse LLM invalide doit être CAPTURÉE et convertie en réponse 200
+    // "sans reco" (providerUsed=none), au lieu de lever une exception -> 500/400.
+    const invalidPlans: Record<string, RecommendationPlan> = {
+      'aucune recommandation': { goalSummary: 'x', recommendations: [], fallbackPlaylist: null },
+      'videoId absent du catalogue': {
         goalSummary: 'x',
         recommendations: [
           { videoId: 'vid-inexistante', title: 'Titre correct', playlistTitle: 'Angular 13', whyRelevant: 'Justification suffisamment longue pour la validation', axes: ['a'] },
         ],
         fallbackPlaylist: null,
-      });
-      await expect(service.recommend('Objectif', 'sess-7')).rejects.toThrow(BadRequestException);
-    });
-
-    it('rejette un whyRelevant trop court (< 20 caractères)', async () => {
-      mockLlm({
+      },
+      'whyRelevant trop court': {
         goalSummary: 'x',
         recommendations: [
           { videoId: 'vid-ng-guards', title: 'Titre correct', playlistTitle: 'Angular 13', whyRelevant: 'Trop court', axes: ['a'] },
         ],
         fallbackPlaylist: null,
-      });
-      await expect(service.recommend('Objectif', 'sess-8')).rejects.toThrow(BadRequestException);
-    });
-
-    it('rejette un tableau axes vide', async () => {
-      mockLlm({
+      },
+      'axes vide': {
         goalSummary: 'x',
         recommendations: [
           { videoId: 'vid-ng-guards', title: 'Titre correct', playlistTitle: 'Angular 13', whyRelevant: 'Justification suffisamment longue pour la validation', axes: [] },
         ],
         fallbackPlaylist: null,
+      },
+    };
+
+    for (const [label, plan] of Object.entries(invalidPlans)) {
+      it(`ne lève pas d'exception et dégrade quand la réponse LLM est invalide: ${label}`, async () => {
+        mockLlm(plan);
+        const result = await service.recommend('Objectif quelconque', 'sess-inv');
+        expect(result.providerUsed).toBe('none');
+        expect(result.fallbackUsed).toBe(true);
+        expect(result.plan.recommendations).toHaveLength(0);
       });
-      await expect(service.recommend('Objectif', 'sess-9')).rejects.toThrow(BadRequestException);
+    }
+
+    it("ne lève pas d'exception quand TOUS les providers LLM échouent", async () => {
+      jest.spyOn(llmService, 'generateStructured').mockRejectedValue(new Error('All LLM providers failed'));
+      const result = await service.recommend('Objectif quelconque', 'sess-fail');
+      expect(result.providerUsed).toBe('none');
+      expect(result.plan.recommendations).toHaveLength(0);
+    });
+
+    it('propose la playlist du catalogue la plus proche en repli (matching mots-clés)', async () => {
+      jest.spyOn(llmService, 'generateStructured').mockRejectedValue(new Error('LLM down'));
+      // "Angular" matche la playlist "Angular 13" du catalogue mocké
+      const result = await service.recommend('Je veux apprendre Angular', 'sess-kw');
+      expect(result.plan.fallbackPlaylist?.playlistId).toBe('pl-angular');
+    });
+
+    it("n'expose aucune playlist de repli si rien ne matche l'objectif", async () => {
+      jest.spyOn(llmService, 'generateStructured').mockRejectedValue(new Error('LLM down'));
+      const result = await service.recommend('xyzabc objectif introuvable zzz', 'sess-nomatch');
+      expect(result.plan.fallbackPlaylist).toBeNull();
     });
   });
 });
