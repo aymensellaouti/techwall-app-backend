@@ -1,4 +1,4 @@
-import { Injectable, NestInterceptor, ExecutionContext, CallHandler, TooManyRequestsException } from '@nestjs/common';
+import { Injectable, NestInterceptor, ExecutionContext, CallHandler, HttpException, HttpStatus } from '@nestjs/common';
 import { Observable } from 'rxjs';
 
 /**
@@ -28,7 +28,7 @@ export class RateLimitInterceptor implements NestInterceptor {
 
     // Limite: 10 requêtes par minute
     if (current.count >= 10) {
-      throw new TooManyRequestsException('Rate limit exceeded (10 req/min)');
+      throw new HttpException('Rate limit exceeded (10 req/min)', HttpStatus.TOO_MANY_REQUESTS);
     }
 
     current.count++;

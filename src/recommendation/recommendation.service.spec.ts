@@ -6,79 +6,47 @@ import { CatalogService } from '../catalog/catalog.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RecommendationPlan } from './types/recommendation-plan.type';
 
+/**
+ * **POURQUOI ces tests:**
+ * Le service recommande des VIDÉOS SPÉCIFIQUES (pas des playlists) et valide
+ * que chaque videoId existe dans le catalogue chargé via prisma.video.findMany.
+ * On mocke donc: le LLM (réponse structurée), le catalogue playlists, ET les
+ * vidéos Prisma. Objectif: prouver la logique de reco + validation sans DB ni LLM réel.
+ */
 describe('RecommendationService', () => {
   let service: RecommendationService;
   let llmService: LlmService;
   let catalogService: CatalogService;
   let prisma: PrismaService;
 
+  // Playlists du catalogue (pour la validation du fallbackPlaylist)
   const mockPlaylists = [
-    {
-      id: 'ang-1',
-      title: 'Angular 22 Complet',
-      description: 'Cours complet sur Angular 22 avec RxJS, routing, services',
-      videoCount: 15,
-      category: { label: 'Développement Web' },
-    },
-    {
-      id: 'ang-auth',
-      title: 'Angular Authentication & Guards',
-      description: 'AuthGuard, CanActivate, JWT tokens, intercepteurs',
-      videoCount: 8,
-      category: { label: 'Développement Web' },
-    },
-    {
-      id: 'vue-1',
-      title: 'Vue 3 Basics',
-      description: 'Introduction à Vue 3 et Composition API',
-      videoCount: 10,
-      category: { label: 'Développement Web' },
-    },
-    {
-      id: 'react-1',
-      title: 'React Modern Patterns',
-      description: 'React hooks, context, performance optimization',
-      videoCount: 12,
-      category: { label: 'Développement Web' },
-    },
-    {
-      id: 'bigdata-1',
-      title: 'Big Data avec Hadoop',
-      description: 'HDFS, MapReduce, Hadoop ecosystem',
-      videoCount: 10,
-      category: { label: 'Big Data' },
-    },
-    {
-      id: 'spark-1',
-      title: 'Apache Spark Deep Dive',
-      description: 'Spark RDD, DataFrame, SQL, streaming',
-      videoCount: 12,
-      category: { label: 'Big Data' },
-    },
+    { id: 'pl-angular', title: 'Angular 13', description: 'Framework frontend', videoCount: 54, category: { label: 'Développement Web' } },
+    { id: 'pl-nestjs', title: 'NestJs 7', description: 'Backend Node', videoCount: 47, category: { label: 'Développement Web' } },
+    { id: 'pl-hadoop', title: 'Hadoop & Compagnie', description: 'Big Data', videoCount: 21, category: { label: 'Big Data' } },
+    { id: 'pl-spark', title: 'Atelier Spark', description: 'Spark', videoCount: 11, category: { label: 'Big Data' } },
+  ];
+
+  // Vidéos du catalogue (retournées par prisma.video.findMany)
+  const mockVideos = [
+    { id: 'vid-ng-guards', title: 'Angular : sécuriser une route avec les Guards', description: 'CanActivate, AuthGuard, protection de routes', playlist: { title: 'Angular 13', category: { label: 'Développement Web' } } },
+    { id: 'vid-ng-interceptor', title: 'Angular : intercepteurs HTTP et JWT', description: 'HttpInterceptor, token JWT', playlist: { title: 'Angular 13', category: { label: 'Développement Web' } } },
+    { id: 'vid-ng-rxjs', title: 'Angular : RxJS et Observables', description: 'Programmation réactive', playlist: { title: 'Angular 13', category: { label: 'Développement Web' } } },
+    { id: 'vid-hadoop-hdfs', title: 'Hadoop : HDFS expliqué', description: 'Système de fichiers distribué', playlist: { title: 'Hadoop & Compagnie', category: { label: 'Big Data' } } },
+    { id: 'vid-spark-rdd', title: 'Spark : les RDD', description: 'Resilient Distributed Datasets', playlist: { title: 'Atelier Spark', category: { label: 'Big Data' } } },
   ];
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         RecommendationService,
-        {
-          provide: LlmService,
-          useValue: {
-            generateStructured: jest.fn(),
-          },
-        },
-        {
-          provide: CatalogService,
-          useValue: {
-            getPlaylists: jest.fn(),
-          },
-        },
+        { provide: LlmService, useValue: { generateStructured: jest.fn() } },
+        { provide: CatalogService, useValue: { getPlaylists: jest.fn() } },
         {
           provide: PrismaService,
           useValue: {
-            recommendationRequest: {
-              create: jest.fn(),
-            },
+            video: { findMany: jest.fn() },
+            recommendationRequest: { create: jest.fn() },
           },
         },
       ],
@@ -89,268 +57,182 @@ describe('RecommendationService', () => {
     catalogService = module.get<CatalogService>(CatalogService);
     prisma = module.get<PrismaService>(PrismaService);
 
-    jest.spyOn(catalogService, 'getPlaylists').mockResolvedValue(mockPlaylists);
+    jest.spyOn(catalogService, 'getPlaylists').mockResolvedValue(mockPlaylists as any);
+    jest.spyOn(prisma.video, 'findMany').mockResolvedValue(mockVideos as any);
     jest.spyOn(prisma.recommendationRequest, 'create').mockResolvedValue({} as any);
   });
 
-  describe('Frontend Framework Learning', () => {
-    it('should recommend Angular playlist for "learn frontend framework" goal', async () => {
-      const mockPlan: RecommendationPlan = {
-        goalSummary: 'Apprendre un framework frontend moderne',
-        steps: [
-          {
-            order: 1,
-            playlistId: 'ang-1',
-            playlistTitle: 'Angular 22 Complet',
-            recommendedVideoIds: ['video-1', 'video-2', 'video-3'],
-            targetedAxes: [
-              'RxJS Observables',
-              'Component lifecycle',
-              'Dependency injection',
-              'Routing',
-            ],
-            whyThisChoice:
-              'Angular est un framework complet et full-featured avec typage fort, parfait pour les applications d\'entreprise. Il offre une courbe d\'apprentissage structurée avec des patterns clairs.',
-            whyNotOthers:
-              'Vue est plus léger mais moins complet pour une formation complète. React se concentre sur la couche présentation et nécessite des librairies externes pour le routing et la gestion d\'état.',
-            relevanceToGoal:
-              'Directement orienté sur un framework frontend moderne que tu veux apprendre, avec une communauté large et beaucoup de ressources.',
-          },
-        ],
-        overallRationale:
-          'Commencer avec Angular 22 car c\'est actuellement l\'une des meilleures options pour un apprentissage progressif et complet en développement frontend.',
-      };
+  const mockLlm = (plan: RecommendationPlan, providerUsed = 'gemini', fallbackUsed = false) =>
+    jest.spyOn(llmService, 'generateStructured').mockResolvedValue({ response: plan, providerUsed, fallbackUsed });
 
-      jest.spyOn(llmService, 'generateStructured').mockResolvedValue({
-        response: mockPlan,
-        providerUsed: 'gemini',
-        fallbackUsed: false,
-      });
-
-      const result = await service.recommend(
-        'Apprendre un framework frontend moderne',
-        'sess-1',
-      );
-
-      expect(result.plan.steps[0].playlistId).toBe('ang-1');
-      expect(result.plan.steps[0].targetedAxes).toContain('RxJS Observables');
-      expect(result.plan.steps[0].whyThisChoice.length).toBeGreaterThan(50);
-      expect(result.plan.steps[0].whyNotOthers.length).toBeGreaterThan(50);
-      expect(result.providerUsed).toBe('gemini');
-      expect(result.fallbackUsed).toBe(false);
-    });
-  });
-
-  describe('Angular Route Security', () => {
-    it('should recommend auth/guard-specific videos for route protection goal', async () => {
-      const mockPlan: RecommendationPlan = {
+  describe('Sécurisation de route Angular', () => {
+    it('recommande les vidéos Guards/JWT pour un objectif de protection de route', async () => {
+      const plan: RecommendationPlan = {
         goalSummary: 'Comprendre comment sécuriser une route Angular',
-        steps: [
+        recommendations: [
           {
-            order: 1,
-            playlistId: 'ang-auth',
-            playlistTitle: 'Angular Authentication & Guards',
-            recommendedVideoIds: ['video-auth-1', 'video-auth-2', 'video-auth-3'],
-            targetedAxes: [
-              'AuthGuard implementation',
-              'CanActivate interface',
-              'JWT token handling',
-              'Route protection patterns',
-            ],
-            whyThisChoice:
-              'Cette playlist couvre spécifiquement les patterns de AuthGuard et de sécurité basée sur les tokens dans Angular. Elle explique comment implémenter CanActivate et protéger les routes de manière professionnelle.',
-            whyNotOthers:
-              'Le cours Angular Complet couvre les bases mais pas les détails de sécurité. Les autres frameworks comme Vue et React ont des approches différentes aux guards et ne sont pas pertinents pour Angular spécifiquement.',
-            relevanceToGoal:
-              'Directement orienté sur la protection des routes Angular qui est exactement ce que tu demandes, avec des exemples concrets de AuthGuard et JWT.',
+            videoId: 'vid-ng-guards',
+            title: 'Angular : sécuriser une route avec les Guards',
+            playlistTitle: 'Angular 13',
+            whyRelevant: 'Couvre exactement CanActivate et AuthGuard pour protéger une route Angular',
+            axes: ['CanActivate', 'AuthGuard', 'Route protection'],
+          },
+          {
+            videoId: 'vid-ng-interceptor',
+            title: 'Angular : intercepteurs HTTP et JWT',
+            playlistTitle: 'Angular 13',
+            whyRelevant: 'Complète la sécurité en montrant comment attacher le token JWT aux requêtes',
+            axes: ['HttpInterceptor', 'JWT'],
           },
         ],
-        overallRationale:
-          'La playlist "Angular Authentication & Guards" adresse directement ta question sur la sécurisation des routes avec tous les détails pratiques que tu as besoin.',
+        fallbackPlaylist: null,
       };
+      mockLlm(plan);
 
-      jest.spyOn(llmService, 'generateStructured').mockResolvedValue({
-        response: mockPlan,
-        providerUsed: 'gemini',
-        fallbackUsed: false,
-      });
+      const result = await service.recommend('Sécuriser une route Angular avec les guards', 'sess-1');
 
-      const result = await service.recommend(
-        'Je veux comprendre comment sécuriser une route Angular avec les guards',
-        'sess-2',
-      );
-
-      expect(result.plan.steps[0].targetedAxes).toContain('AuthGuard implementation');
-      expect(result.plan.steps[0].recommendedVideoIds.length).toBeGreaterThan(0);
-      expect(result.plan.steps[0].whyThisChoice).toContain('AuthGuard');
+      expect(result.plan.recommendations).toHaveLength(2);
+      expect(result.plan.recommendations[0].videoId).toBe('vid-ng-guards');
+      expect(result.plan.recommendations[0].axes).toContain('CanActivate');
+      expect(result.providerUsed).toBe('gemini');
     });
   });
 
-  describe('Big Data Learning Path', () => {
-    it('should recommend Hadoop and Spark for Big Data goal', async () => {
-      const mockPlan: RecommendationPlan = {
-        goalSummary: 'Apprendre Big Data avec Hadoop et Spark',
-        steps: [
+  describe('Parcours Big Data', () => {
+    it('recommande HDFS puis RDD pour un objectif Hadoop/Spark', async () => {
+      const plan: RecommendationPlan = {
+        goalSummary: 'Apprendre le Big Data avec Hadoop et Spark',
+        recommendations: [
           {
-            order: 1,
-            playlistId: 'bigdata-1',
-            playlistTitle: 'Big Data avec Hadoop',
-            recommendedVideoIds: ['bd-1', 'bd-2', 'bd-3'],
-            targetedAxes: ['HDFS fundamentals', 'MapReduce', 'Hadoop ecosystem'],
-            whyThisChoice:
-              'Hadoop est la fondation du Big Data moderne. Cette playlist couvre HDFS et MapReduce qui sont essentiels pour comprendre les architectures Big Data distribuées.',
-            whyNotOthers:
-              'Spark est plus moderne mais nécessite une compréhension de HDFS. Angular et Vue ne sont pas pertinents pour Big Data.',
-            relevanceToGoal:
-              'C\'est le premier pas logique dans ta formation Big Data, établissant les concepts fondamentaux de distribution et de traitement paralléle.',
+            videoId: 'vid-hadoop-hdfs',
+            title: 'Hadoop : HDFS expliqué',
+            playlistTitle: 'Hadoop & Compagnie',
+            whyRelevant: 'Point de départ indispensable: le stockage distribué HDFS avant tout traitement',
+            axes: ['HDFS', 'Stockage distribué'],
           },
           {
-            order: 2,
-            playlistId: 'spark-1',
-            playlistTitle: 'Apache Spark Deep Dive',
-            recommendedVideoIds: ['spark-1', 'spark-2'],
-            targetedAxes: ['Spark RDD', 'DataFrame', 'SQL on Spark', 'Streaming'],
-            whyThisChoice:
-              'Après maîtriser Hadoop, Spark te permet de traiter les données de manière plus efficace et avec une API plus haute niveau. C\'est la prochaine étape logique.',
-            whyNotOthers:
-              'Hadoop seul ne suffit pas pour apprendre le Big Data moderne. Spark est devenu le standard industriel pour le traitement de données à grande échelle.',
-            relevanceToGoal:
-              'Complète ta formation Big Data avec les outils modernes que tu veux apprendre, après avoir compris les fondations avec Hadoop.',
+            videoId: 'vid-spark-rdd',
+            title: 'Spark : les RDD',
+            playlistTitle: 'Atelier Spark',
+            whyRelevant: 'Étape suivante logique: le traitement distribué avec les RDD de Spark',
+            axes: ['RDD', 'Spark'],
           },
         ],
-        overallRationale:
-          'Un parcours progressif de Big Data: commencer par les fondations Hadoop puis progresser vers Spark pour couvrir tout ce que tu veux apprendre.',
+        fallbackPlaylist: null,
       };
+      mockLlm(plan, 'anthropic', false);
 
-      jest.spyOn(llmService, 'generateStructured').mockResolvedValue({
-        response: mockPlan,
-        providerUsed: 'anthropic',
-        fallbackUsed: false,
-      });
+      const result = await service.recommend('Apprendre Big Data avec Hadoop et Spark', 'sess-2');
 
-      const result = await service.recommend(
-        'Apprendre Big Data avec Hadoop et Spark',
-        'sess-3',
-      );
-
-      expect(result.plan.steps).toHaveLength(2);
-      expect(result.plan.steps[0].playlistId).toBe('bigdata-1');
-      expect(result.plan.steps[1].playlistId).toBe('spark-1');
+      expect(result.plan.recommendations.map(r => r.videoId)).toEqual(['vid-hadoop-hdfs', 'vid-spark-rdd']);
     });
   });
 
-  describe('Fallback Chain', () => {
-    it('should use Anthropic when Gemini fails', async () => {
-      const mockPlan: RecommendationPlan = {
-        goalSummary: 'Test fallback',
-        steps: [
+  describe('Chaîne de fallback LLM', () => {
+    it('remonte providerUsed=anthropic et fallbackUsed=true quand Gemini échoue', async () => {
+      const plan: RecommendationPlan = {
+        goalSummary: 'Objectif test',
+        recommendations: [
           {
-            order: 1,
-            playlistId: 'ang-1',
-            playlistTitle: 'Angular 22 Complet',
-            recommendedVideoIds: ['v1'],
-            targetedAxes: ['test'],
-            whyThisChoice: 'This is a test recommendation with sufficient length to pass validation',
-            whyNotOthers: 'Other options are not suitable for this specific scenario in context',
-            relevanceToGoal: 'Directly relevant to the stated learning objective and goals',
+            videoId: 'vid-ng-rxjs',
+            title: 'Angular : RxJS et Observables',
+            playlistTitle: 'Angular 13',
+            whyRelevant: 'Vidéo pertinente avec une justification suffisamment longue pour la validation',
+            axes: ['RxJS'],
           },
         ],
-        overallRationale: 'Test rationale',
+        fallbackPlaylist: null,
       };
+      mockLlm(plan, 'anthropic', true);
 
-      jest.spyOn(llmService, 'generateStructured').mockResolvedValue({
-        response: mockPlan,
-        providerUsed: 'anthropic',
-        fallbackUsed: true,
-      });
-
-      const result = await service.recommend('Any goal', 'sess-4');
+      const result = await service.recommend('Un objectif quelconque', 'sess-3');
 
       expect(result.fallbackUsed).toBe(true);
       expect(result.providerUsed).toBe('anthropic');
     });
   });
 
-  describe('Response Validation', () => {
-    it('should reject whyThisChoice that is too short', async () => {
-      const invalidPlan: RecommendationPlan = {
-        goalSummary: 'Learn',
-        steps: [
+  describe('Fallback playlist', () => {
+    it('accepte un fallbackPlaylist valide présent dans le catalogue', async () => {
+      const plan: RecommendationPlan = {
+        goalSummary: 'Sujet rare',
+        recommendations: [
           {
-            order: 1,
-            playlistId: 'ang-1',
-            playlistTitle: 'Angular',
-            recommendedVideoIds: ['v1'],
-            targetedAxes: ['ax1'],
-            whyThisChoice: 'Short',
-            whyNotOthers: 'This is a long enough explanation with sufficient character length',
-            relevanceToGoal: 'This is a long enough explanation with sufficient character length',
+            videoId: 'vid-ng-guards',
+            title: 'Angular : sécuriser une route avec les Guards',
+            playlistTitle: 'Angular 13',
+            whyRelevant: 'Seule vidéo proche du sujet, justification assez longue pour passer la validation',
+            axes: ['Guards'],
           },
         ],
-        overallRationale: 'test',
+        fallbackPlaylist: { playlistId: 'pl-nestjs', title: 'NestJs 7', reason: 'Pour approfondir côté backend' },
       };
+      mockLlm(plan);
 
-      jest.spyOn(llmService, 'generateStructured').mockResolvedValue({
-        response: invalidPlan,
-        providerUsed: 'gemini',
-        fallbackUsed: false,
-      });
+      const result = await service.recommend('Un sujet peu couvert', 'sess-4');
 
-      await expect(service.recommend('Learn web', 'sess-5')).rejects.toThrow(BadRequestException);
+      expect(result.plan.fallbackPlaylist?.playlistId).toBe('pl-nestjs');
     });
 
-    it('should reject invalid playlistId', async () => {
-      const invalidPlan: RecommendationPlan = {
-        goalSummary: 'Learn',
-        steps: [
+    it('ignore (met à null) un fallbackPlaylist dont l\'ID est absent du catalogue', async () => {
+      const plan: RecommendationPlan = {
+        goalSummary: 'Sujet rare',
+        recommendations: [
           {
-            order: 1,
-            playlistId: 'invalid-id-xyz',
-            playlistTitle: 'Unknown',
-            recommendedVideoIds: ['v1'],
-            targetedAxes: ['ax1'],
-            whyThisChoice: 'This is a long enough explanation with sufficient character length',
-            whyNotOthers: 'This is a long enough explanation with sufficient character length',
-            relevanceToGoal: 'This is a long enough explanation with sufficient character length',
+            videoId: 'vid-ng-guards',
+            title: 'Angular : sécuriser une route avec les Guards',
+            playlistTitle: 'Angular 13',
+            whyRelevant: 'Seule vidéo proche du sujet, justification assez longue pour passer la validation',
+            axes: ['Guards'],
           },
         ],
-        overallRationale: 'test',
+        fallbackPlaylist: { playlistId: 'pl-inexistante', title: 'Inconnue', reason: 'x' },
       };
+      mockLlm(plan);
 
-      jest.spyOn(llmService, 'generateStructured').mockResolvedValue({
-        response: invalidPlan,
-        providerUsed: 'gemini',
-        fallbackUsed: false,
-      });
+      const result = await service.recommend('Un sujet peu couvert', 'sess-5');
 
-      await expect(service.recommend('Learn', 'sess-6')).rejects.toThrow(BadRequestException);
+      expect(result.plan.fallbackPlaylist).toBeNull();
+    });
+  });
+
+  describe('Validation des recommandations', () => {
+    it('rejette une réponse sans aucune recommandation', async () => {
+      mockLlm({ goalSummary: 'x', recommendations: [], fallbackPlaylist: null });
+      await expect(service.recommend('Objectif', 'sess-6')).rejects.toThrow(BadRequestException);
     });
 
-    it('should reject empty recommendedVideoIds', async () => {
-      const invalidPlan: RecommendationPlan = {
-        goalSummary: 'Learn',
-        steps: [
-          {
-            order: 1,
-            playlistId: 'ang-1',
-            playlistTitle: 'Angular',
-            recommendedVideoIds: [],
-            targetedAxes: ['ax1'],
-            whyThisChoice: 'This is a long enough explanation with sufficient character length',
-            whyNotOthers: 'This is a long enough explanation with sufficient character length',
-            relevanceToGoal: 'This is a long enough explanation with sufficient character length',
-          },
+    it('rejette un videoId absent du catalogue', async () => {
+      mockLlm({
+        goalSummary: 'x',
+        recommendations: [
+          { videoId: 'vid-inexistante', title: 'Titre correct', playlistTitle: 'Angular 13', whyRelevant: 'Justification suffisamment longue pour la validation', axes: ['a'] },
         ],
-        overallRationale: 'test',
-      };
-
-      jest.spyOn(llmService, 'generateStructured').mockResolvedValue({
-        response: invalidPlan,
-        providerUsed: 'gemini',
-        fallbackUsed: false,
+        fallbackPlaylist: null,
       });
+      await expect(service.recommend('Objectif', 'sess-7')).rejects.toThrow(BadRequestException);
+    });
 
-      await expect(service.recommend('Learn', 'sess-7')).rejects.toThrow(BadRequestException);
+    it('rejette un whyRelevant trop court (< 20 caractères)', async () => {
+      mockLlm({
+        goalSummary: 'x',
+        recommendations: [
+          { videoId: 'vid-ng-guards', title: 'Titre correct', playlistTitle: 'Angular 13', whyRelevant: 'Trop court', axes: ['a'] },
+        ],
+        fallbackPlaylist: null,
+      });
+      await expect(service.recommend('Objectif', 'sess-8')).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejette un tableau axes vide', async () => {
+      mockLlm({
+        goalSummary: 'x',
+        recommendations: [
+          { videoId: 'vid-ng-guards', title: 'Titre correct', playlistTitle: 'Angular 13', whyRelevant: 'Justification suffisamment longue pour la validation', axes: [] },
+        ],
+        fallbackPlaylist: null,
+      });
+      await expect(service.recommend('Objectif', 'sess-9')).rejects.toThrow(BadRequestException);
     });
   });
 });

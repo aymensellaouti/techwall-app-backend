@@ -3,6 +3,7 @@ import { CatalogService } from '../catalog/catalog.service';
 import { LlmService } from '../llm/llm.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RecommendationPlan } from './types/recommendation-plan.type';
+import { mockVideos } from '../catalog/fixtures';
 import { randomUUID } from 'crypto';
 
 interface PlaylistData {
@@ -71,9 +72,19 @@ export class RecommendationService {
    * - Créer un format lisible pour Gemini: "video-id | titre | description"
    */
   private async buildVideoCatalog(playlists: any[]) {
-    const allVideos = await this.prisma.video.findMany({
-      include: { playlist: { include: { category: true } } },
-    });
+    let allVideos: any[];
+    try {
+      allVideos = await this.prisma.video.findMany({
+        include: { playlist: { include: { category: true } } },
+      });
+    } catch (error) {
+      // **POURQUOI:** En dev local sans DB, on retombe sur les vidéos fixtures
+      // pour que la recommandation reste fonctionnelle et testable hors-ligne.
+      this.logger.warn(
+        `[buildVideoCatalog] Prisma unavailable (${error.message}), using fixture videos`,
+      );
+      allVideos = mockVideos;
+    }
 
     this.logger.debug(`[buildVideoCatalog] Loaded ${allVideos.length} total videos`);
 
