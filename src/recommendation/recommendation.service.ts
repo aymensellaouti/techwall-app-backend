@@ -51,9 +51,20 @@ const RECOMMENDATION_SCHEMA = {
   required: ['goalSummary', 'recommendations'],
 };
 
+interface CacheEntry {
+  value: { plan: RecommendationPlan; providerUsed: string; fallbackUsed: boolean };
+  expiresAt: number;
+}
+
 @Injectable()
 export class RecommendationService {
   private readonly logger = new Logger(RecommendationService.name);
+
+  // **Cache en mémoire par objectif normalisé** (#2): évite de rappeler le LLM pour
+  // des objectifs identiques/proches. Réduit coût, latence et variabilité des réponses.
+  private readonly cache = new Map<string, CacheEntry>();
+  private readonly CACHE_TTL_MS = 60 * 60 * 1000; // 1 heure
+  private readonly CACHE_MAX = 200;
 
   constructor(
     private llmService: LlmService,
@@ -63,15 +74,16 @@ export class RecommendationService {
 
   /**
    * **POURQUOI cette méthode:**
-   * Construit un catalogue détaillé vidéo-par-vidéo au lieu de playlist-par-playlist
-   * Gemini peut ainsi recommander des vidéos SPÉCIFIQUES avec titre exact et contexte
+   * Construit un catalogue détaillé vidéo-par-vidéo pour que Gemini recommande des
+   * vidéos SPÉCIFIQUES avec titre exact et contexte.
    *
-   * **Logique:**
-   * - Charger toutes les vidéos depuis la DB
-   * - Grouper par playlist
-   * - Créer un format lisible pour Gemini: "video-id | titre | description"
+   * **Pré-filtrage (important):**
+   * On n'envoie PAS tout le catalogue (600+ vidéos) au LLM à chaque requête.
+   * On pré-sélectionne les vidéos les plus pertinentes pour l'objectif (matching
+   * mots-clés). Gain: coût tokens, latence, précision, et passage à l'échelle.
+   * Le LLM ne peut recommander que parmi ces candidates (la validation le vérifie).
    */
-  private async buildVideoCatalog(playlists: any[]) {
+  private async buildVideoCatalog(goalText: string, playlists: any[]) {
     let allVideos: any[];
     try {
       allVideos = await this.prisma.video.findMany({
@@ -86,20 +98,114 @@ export class RecommendationService {
       allVideos = mockVideos;
     }
 
-    this.logger.debug(`[buildVideoCatalog] Loaded ${allVideos.length} total videos`);
+    const candidates = this.selectCandidateVideos(goalText, allVideos);
+    this.logger.debug(
+      `[buildVideoCatalog] ${allVideos.length} vidéos au total -> ${candidates.length} candidates envoyées au LLM`,
+    );
 
-    const summary = allVideos
+    const summary = candidates
       .map(
         v =>
-          `- ID: ${v.id} | "${v.title}" (playlist: ${v.playlist.title}, catégorie: ${v.playlist.category?.label})\n  Description: ${v.description || 'Pas de description'}`,
+          `- ID: ${v.id} | "${v.title}" (playlist: ${v.playlist?.title}, catégorie: ${v.playlist?.category?.label})\n  Description: ${v.description || 'Pas de description'}`,
       )
       .join('\n');
 
     return {
-      videos: allVideos,
+      videos: candidates,
       playlists,
       summary,
     };
+  }
+
+  /**
+   * Pré-sélection des vidéos candidates par pertinence à l'objectif.
+   * Score = nombre de mots (>= 3 lettres) de l'objectif retrouvés dans le titre
+   * (poids fort), la description, la playlist et la catégorie.
+   * - On garde les mieux scorées jusqu'à MAX_CANDIDATES.
+   * - Si trop peu matchent (objectif vague), on complète avec les plus vues pour
+   *   toujours donner au LLM un pool suffisant.
+   */
+  private selectCandidateVideos(goalText: string, allVideos: any[]): any[] {
+    const MAX_CANDIDATES = 40;
+    const MIN_CANDIDATES = 12;
+
+    if (allVideos.length <= MAX_CANDIDATES) return allVideos;
+
+    const words = this.keywords(goalText);
+    const byViews = (a: any, b: any) => (b.viewCount ?? 0) - (a.viewCount ?? 0);
+
+    const scored = allVideos
+      .map(v => ({ v, score: this.scoreVideo(v, words) }))
+      .sort((a, b) => b.score - a.score || byViews(a.v, b.v));
+
+    const matched = scored.filter(s => s.score > 0).map(s => s.v);
+
+    let candidates = matched.slice(0, MAX_CANDIDATES);
+
+    // Si trop peu de matchs, compléter avec les vidéos les plus vues (hors doublons)
+    if (candidates.length < MIN_CANDIDATES) {
+      const chosen = new Set(candidates.map(v => v.id));
+      const fillers = [...allVideos]
+        .sort(byViews)
+        .filter(v => !chosen.has(v.id));
+      candidates = candidates.concat(fillers).slice(0, MAX_CANDIDATES);
+    }
+
+    return candidates;
+  }
+
+  private scoreVideo(video: any, words: string[]): number {
+    if (!words.length) return 0;
+    const title = (video.title ?? '').toLowerCase();
+    const desc = (video.description ?? '').toLowerCase();
+    const playlist = (video.playlist?.title ?? '').toLowerCase();
+    const category = (video.playlist?.category?.label ?? '').toLowerCase();
+    let score = 0;
+    for (const w of words) {
+      if (title.includes(w)) score += 3;
+      if (playlist.includes(w)) score += 2;
+      if (category.includes(w)) score += 2;
+      if (desc.includes(w)) score += 1;
+    }
+    return score;
+  }
+
+  /** Normalise l'objectif en mots-clés (minuscules, sans accents, >= 3 lettres). */
+  private keywords(text: string): string[] {
+    return (text || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .split(/[^a-z0-9]+/i)
+      .filter(w => w.length >= 3);
+  }
+
+  /** Clé de cache: mots-clés triés, pour que "apprendre Angular" == "angular apprendre". */
+  private cacheKey(goalText: string): string {
+    return this.keywords(goalText).sort().join(' ');
+  }
+
+  private getCached(key: string) {
+    const entry = this.cache.get(key);
+    if (!entry) return null;
+    if (Date.now() > entry.expiresAt) {
+      this.cache.delete(key);
+      return null;
+    }
+    return entry.value;
+  }
+
+  private setCached(
+    key: string,
+    value: { plan: RecommendationPlan; providerUsed: string; fallbackUsed: boolean },
+  ) {
+    if (!key) return;
+    // Éviction simple: si plein, on retire l'entrée la plus ancienne insérée
+    if (this.cache.size >= this.CACHE_MAX) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest !== undefined) this.cache.delete(oldest);
+    }
+    this.cache.set(key, { value, expiresAt: Date.now() + this.CACHE_TTL_MS });
   }
 
   async recommend(goalText: string, sessionId: string): Promise<{
@@ -109,15 +215,23 @@ export class RecommendationService {
   }> {
     this.logger.debug(`[recommend] Starting for goal: "${goalText.substring(0, 30)}..."`);
 
+    // **Cache (#2):** un objectif déjà traité récemment est resservi sans rappeler le LLM
+    const cacheKey = this.cacheKey(goalText);
+    const cached = this.getCached(cacheKey);
+    if (cached) {
+      this.logger.debug('[recommend] Réponse servie depuis le cache');
+      return cached;
+    }
+
     try {
       // **POURQUOI:** Charger les vidéos individuelles, pas juste les playlists
       // Gemini ne peut recommander que ce qu'on lui donne. Sans les vidéos, impossible d'être spécifique
       const allPlaylists = await this.catalogService.getPlaylists();
       this.logger.debug(`[recommend] Loaded ${allPlaylists.length} playlists`);
 
-      // **POURQUOI:** Charger toutes les vidéos de toutes les playlists
-      // On construit un catalogue détaillé avec titre + description de chaque vidéo
-      const videoCatalog = await this.buildVideoCatalog(allPlaylists);
+      // **POURQUOI:** Pré-filtrage des vidéos candidates selon l'objectif (#1)
+      // On ne construit le catalogue qu'à partir des vidéos les plus pertinentes
+      const videoCatalog = await this.buildVideoCatalog(goalText, allPlaylists);
       this.logger.debug(`[recommend] Built video catalog with ${videoCatalog.videos.length} videos`);
 
       const catalogSummary = videoCatalog.summary;
@@ -185,7 +299,11 @@ Retourne UNIQUEMENT JSON valide:
         `[recommend] Successfully saved recommendation (provider: ${providerUsed}, fallback: ${fallbackUsed})`,
       );
 
-      return { plan: response, providerUsed, fallbackUsed };
+      const result = { plan: response, providerUsed, fallbackUsed };
+      // On ne met en cache que les vraies recommandations (pas les replis) pour ne
+      // pas figer un état dégradé transitoire.
+      this.setCached(cacheKey, result);
+      return result;
     } catch (error) {
       // **POURQUOI cette dégradation:**
       // L'endpoint ne doit JAMAIS renvoyer un 500 à l'utilisateur (panne LLM, réponse

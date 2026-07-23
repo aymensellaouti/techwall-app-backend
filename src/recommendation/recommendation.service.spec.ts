@@ -253,4 +253,97 @@ describe('RecommendationService', () => {
       expect(result.plan.fallbackPlaylist).toBeNull();
     });
   });
+
+  describe('Pré-filtrage et cache', () => {
+    // Gros catalogue: 49 vidéos Python + 1 vidéo Angular Guards pertinente
+    const bigCatalog = (() => {
+      const vids: any[] = [];
+      for (let i = 0; i < 49; i++) {
+        vids.push({
+          id: `vid-py-${i}`,
+          title: `Python leçon ${i}`,
+          description: 'bases de python',
+          viewCount: i,
+          playlist: { title: 'Python 101', category: { label: 'Algorithmique' } },
+        });
+      }
+      vids.push({
+        id: 'vid-ng-guards-big',
+        title: 'Angular : sécuriser une route avec les Guards',
+        description: 'CanActivate AuthGuard protection de routes',
+        viewCount: 5,
+        playlist: { title: 'Angular 13', category: { label: 'Développement Web' } },
+      });
+      return vids;
+    })();
+
+    it("n'envoie au LLM qu'un sous-ensemble de vidéos candidates (pré-filtrage)", async () => {
+      jest.spyOn(prisma.video, 'findMany').mockResolvedValue(bigCatalog as any);
+      const spy = mockLlm({
+        goalSummary: 'x',
+        recommendations: [
+          {
+            videoId: 'vid-ng-guards-big',
+            title: 'Angular : sécuriser une route avec les Guards',
+            playlistTitle: 'Angular 13',
+            whyRelevant: "Couvre exactement les guards demandés dans l'objectif utilisateur",
+            axes: ['Guards'],
+          },
+        ],
+        fallbackPlaylist: null,
+      });
+
+      await service.recommend('sécuriser une route Angular avec les guards', 'sess-pf');
+
+      const systemPrompt = spy.mock.calls[0][0].systemPrompt as string;
+      const count = (systemPrompt.match(/- ID:/g) || []).length;
+      expect(count).toBeLessThanOrEqual(40); // plafonné, pas les 50
+      expect(count).toBeLessThan(bigCatalog.length);
+      expect(systemPrompt).toContain('vid-ng-guards-big'); // la vidéo pertinente est bien incluse
+    });
+
+    it("met en cache: un objectif déjà traité ne rappelle pas le LLM", async () => {
+      const spy = mockLlm({
+        goalSummary: 'x',
+        recommendations: [
+          {
+            videoId: 'vid-ng-rxjs',
+            title: 'Angular : RxJS et Observables',
+            playlistTitle: 'Angular 13',
+            whyRelevant: 'Justification suffisamment longue pour passer la validation du plan',
+            axes: ['RxJS'],
+          },
+        ],
+        fallbackPlaylist: null,
+      });
+
+      const r1 = await service.recommend('Apprendre RxJS avec Angular', 'sess-c1');
+      const r2 = await service.recommend('Apprendre RxJS avec Angular', 'sess-c2');
+
+      expect(spy).toHaveBeenCalledTimes(1); // 2e appel servi depuis le cache
+      expect(r1.plan.recommendations[0].videoId).toBe('vid-ng-rxjs');
+      expect(r2.plan.recommendations[0].videoId).toBe('vid-ng-rxjs');
+    });
+
+    it("la clé de cache ignore l'ordre des mots", async () => {
+      const spy = mockLlm({
+        goalSummary: 'x',
+        recommendations: [
+          {
+            videoId: 'vid-ng-rxjs',
+            title: 'Angular : RxJS et Observables',
+            playlistTitle: 'Angular 13',
+            whyRelevant: 'Justification suffisamment longue pour passer la validation du plan',
+            axes: ['RxJS'],
+          },
+        ],
+        fallbackPlaylist: null,
+      });
+
+      await service.recommend('Angular RxJS', 'sess-o1');
+      await service.recommend('RxJS Angular', 'sess-o2');
+
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
+  });
 });
