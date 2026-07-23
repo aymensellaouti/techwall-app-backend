@@ -345,5 +345,30 @@ describe('RecommendationService', () => {
 
       expect(spy).toHaveBeenCalledTimes(1);
     });
+
+    it("n'utilise pas le cache et injecte le contexte quand un historique est fourni", async () => {
+      const spy = mockLlm({
+        goalSummary: 'x',
+        recommendations: [
+          {
+            videoId: 'vid-ng-rxjs',
+            title: 'Angular : RxJS et Observables',
+            playlistTitle: 'Angular 13',
+            whyRelevant: 'Justification suffisamment longue pour passer la validation du plan',
+            axes: ['RxJS'],
+          },
+        ],
+        fallbackPlaylist: null,
+      });
+
+      const history = 'Utilisateur: Apprendre Angular\nAssistant: [vidéos proposées: Intro Angular]';
+      await service.recommend('et pour approfondir', 'sess-h1', history);
+      await service.recommend('et pour approfondir', 'sess-h2', history);
+
+      expect(spy).toHaveBeenCalledTimes(2); // pas de cache avec historique
+      const userPrompt = spy.mock.calls[0][0].userPrompt as string;
+      expect(userPrompt).toContain('Contexte de la conversation');
+      expect(userPrompt).toContain('Apprendre Angular');
+    });
   });
 });

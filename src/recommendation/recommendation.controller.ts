@@ -22,7 +22,7 @@ export class RecommendationController {
     const sessionId = dto.sessionId || randomUUID();
     this.logger.debug(`Session ID: ${sessionId}`);
 
-    const result = await this.recommendationService.recommend(dto.goalText, sessionId);
+    const result = await this.recommendationService.recommend(dto.goalText, sessionId, dto.history);
 
     return {
       sessionId,

@@ -208,19 +208,24 @@ export class RecommendationService {
     this.cache.set(key, { value, expiresAt: Date.now() + this.CACHE_TTL_MS });
   }
 
-  async recommend(goalText: string, sessionId: string): Promise<{
+  async recommend(goalText: string, sessionId: string, history?: string): Promise<{
     plan: RecommendationPlan;
     providerUsed: string;
     fallbackUsed: boolean;
   }> {
     this.logger.debug(`[recommend] Starting for goal: "${goalText.substring(0, 30)}..."`);
 
-    // **Cache (#2):** un objectif déjà traité récemment est resservi sans rappeler le LLM
+    // **Cache (#2):** un objectif déjà traité récemment est resservi sans rappeler le LLM.
+    // On NE met PAS en cache les requêtes avec historique (#3): la réponse dépend du
+    // contexte de conversation, donc elle n'est ni réutilisable ni figeable.
+    const useCache = !history;
     const cacheKey = this.cacheKey(goalText);
-    const cached = this.getCached(cacheKey);
-    if (cached) {
-      this.logger.debug('[recommend] Réponse servie depuis le cache');
-      return cached;
+    if (useCache) {
+      const cached = this.getCached(cacheKey);
+      if (cached) {
+        this.logger.debug('[recommend] Réponse servie depuis le cache');
+        return cached;
+      }
     }
 
     try {
@@ -276,7 +281,12 @@ Retourne UNIQUEMENT JSON valide:
   ]
 }`;
 
-      const userPrompt = `Objectif: ${goalText}`;
+      // **Mémoire conversationnelle (#3):** si un historique est fourni, on le donne
+      // au LLM pour qu'il interprète les questions de suivi ("et pour approfondir ?").
+      const contextBlock = history
+        ? `\n\nContexte de la conversation récente (pour interpréter les questions de suivi):\n${history}\n`
+        : '';
+      const userPrompt = `Objectif actuel: ${goalText}${contextBlock}`;
 
       this.logger.debug(`[recommend] Calling LLM service...`);
       const { response, providerUsed, fallbackUsed } =
@@ -300,9 +310,9 @@ Retourne UNIQUEMENT JSON valide:
       );
 
       const result = { plan: response, providerUsed, fallbackUsed };
-      // On ne met en cache que les vraies recommandations (pas les replis) pour ne
-      // pas figer un état dégradé transitoire.
-      this.setCached(cacheKey, result);
+      // On ne met en cache que les vraies recommandations (pas les replis) et seulement
+      // hors contexte conversationnel, pour ne pas figer un état transitoire/contextuel.
+      if (useCache) this.setCached(cacheKey, result);
       return result;
     } catch (error) {
       // **POURQUOI cette dégradation:**

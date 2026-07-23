@@ -9,5 +9,11 @@ export class RecommendationRequestDto {
   @IsOptional()
   @IsString()
   sessionId?: string;
+
+  // Transcript des derniers échanges (formaté côté frontend) pour les questions de suivi.
+  @IsOptional()
+  @IsString()
+  @MaxLength(4000)
+  history?: string;
 }
 
